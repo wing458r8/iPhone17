@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { AvailabilityResult } from "@/types";
 import { PRODUCTS, PRODUCT_GROUPS } from "@/lib/products";
+import { fetchAvailabilityFromBrowser } from "@/lib/apple-client";
 import StoreCard from "@/components/StoreCard";
 import NotificationToggle from "@/components/NotificationToggle";
 import PostalCodeInput from "@/components/PostalCodeInput";
@@ -41,17 +42,17 @@ export default function Home() {
       setError(null);
 
       try {
-        const res = await fetch(
-          `/api/availability?postalCode=${code}`,
-          { cache: "no-store" }
-        );
-        const json = await res.json();
-
-        if (!res.ok) {
-          throw new Error(json.error ?? "取得に失敗しました");
+        let result: AvailabilityResult;
+        try {
+          // まずブラウザから直接 Apple API を呼ぶ（Cloudflare 回避）
+          result = await fetchAvailabilityFromBrowser(code);
+        } catch {
+          // CORS などで失敗した場合はサーバー経由にフォールバック
+          const res = await fetch(`/api/availability?postalCode=${code}`, { cache: "no-store" });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error ?? "取得に失敗しました");
+          result = json;
         }
-
-        const result: AvailabilityResult = json;
         setData(result);
         setLastCheck(new Date());
         setCountdown(POLL_INTERVAL / 1000);
