@@ -36,19 +36,16 @@ function transformStore(s: NonNullable<AppleApiResponse["body"]["PickupMessage"]
   };
 }
 
-// ブラウザから直接 Apple API を呼ぶ（Cloudflare 回避）
+// Cloudflare Worker 経由で Apple API を呼ぶ
+const CF_WORKER = "https://long-voice-e512.wing45888.workers.dev";
+
 export async function fetchAvailabilityFromBrowser(
   postalCode: string
 ): Promise<AvailabilityResult> {
-  const url = buildUrl(postalCode);
-  const res = await fetch(url, {
-    headers: {
-      Accept: "application/json, text/javascript, */*; q=0.01",
-      "Accept-Language": "ja-JP,ja;q=0.9",
-      "X-Requested-With": "XMLHttpRequest",
-    },
-    credentials: "include", // Apple の既存 Cookie を送信
-  });
+  // Cloudflare Worker にプロキシさせる
+  const appleUrl = buildUrl(postalCode);
+  const workerUrl = CF_WORKER + "/jp/shop/fulfillment-messages?" + appleUrl.split("?")[1];
+  const res = await fetch(workerUrl);
 
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
