@@ -1,26 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PRODUCTS, PRODUCT_MAP } from "@/lib/products";
-import type {
-  AppleApiResponse,
-  AppleStore,
-  AvailabilityResult,
-  Store,
-} from "@/types";
+import type { AppleApiResponse, AvailabilityResult, Store, AppleStore } from "@/types";
 
-// Edge Runtime を使用することで Cloudflare の Bot 検出を回避
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function buildUrl(postalCode: string): string {
-  const params = new URLSearchParams({
-    pl: "true",
-    "mts.0": "compact",
-    cppart: "UNLOCKED/JP",
-    location: postalCode,
-  });
-  PRODUCTS.forEach((p, i) => params.set(`parts.${i}`, p.sku));
-  return `https://www.apple.com/jp/shop/fulfillment-messages?${params}`;
-}
 
 function transformStore(s: AppleStore): Store {
   const availability: Store["availability"] = {};
@@ -70,50 +53,39 @@ function getDemoData(): AvailabilityResult {
 
 export async function GET(request: NextRequest) {
   const postalCode = request.nextUrl.searchParams.get("postalCode") ?? "1060032";
-  const demo = request.nextUrl.searchParams.get("demo") === "true";
 
   if (!/^\d{7}$/.test(postalCode)) {
     return NextResponse.json({ error: "郵便番号は7桁の数字で入力してください" }, { status: 400 });
   }
 
-  if (demo) {
-    return NextResponse.json({ ...getDemoData(), isDemo: true }, { headers: { "Cache-Control": "no-store" } });
+  // Vercel 環境では Python 関数（curl_cffi）経由で Apple API を呼ぶ
+  const vercelUrl = process.env.VERCEL_URL;
+  if (vercelUrl) {
+    try {
+      const pythonRes = await fetch(
+        `https://${vercelUrl}/api/apple?postalCode=${postalCode}`,
+        { cache: "no-store" }
+      );
+      if (pythonRes.ok) {
+        const data: AppleApiResponse = await pythonRes.json();
+        const rawStores = data?.body?.PickupMessage?.stores ?? [];
+        const stores = rawStores.map(transformStore);
+        const result: AvailabilityResult = {
+          stores,
+          fetchedAt: new Date().toISOString(),
+          hasAvailable: stores.some((s) =>
+            Object.values(s.availability).some((a) => a.pickupDisplay === "available")
+          ),
+        };
+        return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+      }
+    } catch {
+      // Python 関数が失敗した場合はデモにフォールバック
+    }
   }
 
-  try {
-    const res = await fetch(buildUrl(postalCode), {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8",
-        "Referer": "https://www.apple.com/jp/shop/buy-iphone",
-        "Origin": "https://www.apple.com",
-        "sec-ch-ua": '"Google Chrome";v="124", "Chromium";v="124", "Not-A.Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"macOS"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-    });
-
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const data: AppleApiResponse = await res.json();
-    const rawStores = data?.body?.PickupMessage?.stores ?? [];
-    const stores = rawStores.map(transformStore);
-    const result: AvailabilityResult = {
-      stores,
-      fetchedAt: new Date().toISOString(),
-      hasAvailable: stores.some((s) => Object.values(s.availability).some((a) => a.pickupDisplay === "available")),
-    };
-
-    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
-  } catch {
-    return NextResponse.json(
-      { ...getDemoData(), isDemo: true },
-      { headers: { "Cache-Control": "no-store" } }
-    );
-  }
+  return NextResponse.json(
+    { ...getDemoData(), isDemo: true },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }
